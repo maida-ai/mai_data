@@ -12,7 +12,11 @@ license = "Apache-2.0"
 authors = [
     { name = "Maida AI" }
 ]
-dependencies = []
+dependencies = [
+    "requests>=2.31.0",
+    "click>=8.1.7",
+    "tqdm>=4.66.1",
+]
 
 [project.optional-dependencies]
 dev = [
