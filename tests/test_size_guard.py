@@ -1,10 +1,7 @@
 """Tests for the size guard utility."""
 
-import os
 import tempfile
 from pathlib import Path
-
-import pytest
 
 from mai_data.size_guard import check_repo_size, get_large_files
 

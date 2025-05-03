@@ -1,14 +1,13 @@
 """Size guard utilities for checking file sizes in the repository."""
 
-import os
+from collections.abc import Iterator
 from pathlib import Path
-from typing import Iterator
 
 
 def get_large_files(
     root_dir: str | Path,
     max_size_mb: int = 200,
-    ignore_patterns: list[str] = [".md", ".txt"],
+    ignore_patterns: list[str] | None = None,
 ) -> Iterator[tuple[Path, int]]:
     """Find files larger than the specified size limit.
 
@@ -20,6 +19,7 @@ def get_large_files(
     Yields:
         Tuples of (file_path, size_in_bytes) for files exceeding the size limit
     """
+    ignore_patterns = [".md", ".txt"] if ignore_patterns is None else ignore_patterns
     max_size_bytes = max_size_mb * 1024 * 1024
     root_path = Path(root_dir)
 
