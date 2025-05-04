@@ -1,0 +1,16 @@
+# Default configuration for PR splitting
+pr_split:
+  # Maximum lines of code per atomic diff
+  max_loc: 500
+  # Maximum number of directories before splitting
+  max_dirs: 3
+  # Minimum number of atomic diffs to keep a PR
+  min_diffs: 2
+  # Cache settings
+  cache:
+    enabled: true
+    dir: .cache/diffs
+  # Rate limiting
+  rate_limit:
+    enabled: true
+    seconds: 1

@@ -4,10 +4,15 @@ import json
 from collections.abc import Iterator
 from pathlib import Path
 
-import click
+import hydra
+import typer
+from omegaconf import OmegaConf
 from tqdm import tqdm
+from typer import Option
 
-from .pr_split import split_pr
+from mai_data.pr_split import split_pr
+
+app = typer.Typer(help="Split GitHub PRs into atomic diffs")
 
 
 def read_ndjson(file_path: Path) -> Iterator[dict]:
@@ -26,21 +31,36 @@ def write_ndjson(file_path: Path, records: Iterator[dict]) -> None:
                 f.write(json.dumps(record) + "\n")
 
 
-@click.command()
-@click.argument("input_file", type=click.Path(exists=True, path_type=Path))
-@click.argument("output_file", type=click.Path(path_type=Path))
-def main(input_file: Path, output_file: Path) -> None:
-    """Split PRs in input NDJSON file into atomic diffs.
+@app.command()
+def split_dump(
+    input_file: Path = Option(
+        ...,
+        help="Path to input NDJSON file with raw PR records",
+        exists=True,
+    ),
+    output_file: Path = Option(
+        ...,
+        help="Path to output NDJSON file for atomic diffs",
+    ),
+    config_path: str | None = Option(
+        None,
+        help="Path to custom config file (optional)",
+    ),
+) -> None:
+    """Split PRs in input NDJSON file into atomic diffs."""
+    # Load configuration
+    if config_path:
+        cfg = OmegaConf.load(config_path)
+    else:
+        with hydra.initialize_config_dir(config_dir="config"):
+            cfg = hydra.compose(config_name="config")
 
-    INPUT_FILE: Path to input NDJSON file with raw PR records
-    OUTPUT_FILE: Path to output NDJSON file for atomic diffs
-    """
     # Ensure output directory exists
     output_file.parent.mkdir(parents=True, exist_ok=True)
 
     # Process records with progress bar
     records = read_ndjson(input_file)
-    processed = (split_pr(record) for record in records)
+    processed = (split_pr(record, cfg.pr_split) for record in records)
 
     # Count total lines for progress bar
     total = sum(1 for _ in open(input_file))
@@ -52,4 +72,4 @@ def main(input_file: Path, output_file: Path) -> None:
 
 
 if __name__ == "__main__":
-    main()
+    app()

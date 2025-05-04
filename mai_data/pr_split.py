@@ -5,7 +5,6 @@ import time
 from pathlib import Path
 
 import requests
-from omegaconf import DictConfig
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
 
@@ -14,46 +13,44 @@ session = requests.Session()
 retries = Retry(total=3, backoff_factor=0.5)
 session.mount("https://", HTTPAdapter(max_retries=retries))
 
+# Cache directory for downloaded diffs
+CACHE_DIR = Path(".cache/diffs")
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-def get_cached_diff(url: str, cache_dir: Path) -> str | None:
+
+def get_cached_diff(url: str) -> str | None:
     """Get a diff from cache if available."""
     cache_key = hashlib.sha256(url.encode()).hexdigest()
-    cache_path = cache_dir / cache_key
+    cache_path = CACHE_DIR / cache_key
 
     if cache_path.exists():
         return cache_path.read_text()
     return None
 
 
-def cache_diff(url: str, content: str, cache_dir: Path) -> None:
+def cache_diff(url: str, content: str) -> None:
     """Cache a downloaded diff."""
     cache_key = hashlib.sha256(url.encode()).hexdigest()
-    cache_path = cache_dir / cache_key
+    cache_path = CACHE_DIR / cache_key
     cache_path.write_text(content)
 
 
-def fetch_diff(url: str, cfg: DictConfig) -> str:
+def fetch_diff(url: str) -> str:
     """Fetch a diff from GitHub with caching and rate limiting."""
-    cache_dir = Path(cfg.cache.dir)
-    cache_dir.mkdir(parents=True, exist_ok=True)
+    # Check cache first
+    cached = get_cached_diff(url)
+    if cached:
+        return cached
 
-    # Check cache first if enabled
-    if cfg.cache.enabled:
-        cached = get_cached_diff(url, cache_dir)
-        if cached:
-            return cached
-
-    # Rate limit if enabled
-    if cfg.rate_limit.enabled:
-        time.sleep(cfg.rate_limit.seconds)
+    # Rate limit: 1 second between requests to same host
+    time.sleep(1)
 
     response = session.get(url)
     response.raise_for_status()
     content = response.text
 
-    # Cache the result if enabled
-    if cfg.cache.enabled:
-        cache_diff(url, content, cache_dir)
+    # Cache the result
+    cache_diff(url, content)
     return content
 
 
@@ -96,11 +93,11 @@ def group_by_directory(files: list[dict[str, str]]) -> dict[str, list[dict[str, 
     return groups
 
 
-def split_pr(raw_json: dict, cfg: DictConfig) -> dict | None:
+def split_pr(raw_json: dict) -> dict | None:
     """Split a PR into atomic diffs based on directory structure and size."""
     try:
         # Fetch the diff
-        diff_text = fetch_diff(raw_json["diff_url"], cfg)
+        diff_text = fetch_diff(raw_json["diff_url"])
 
         # Parse into file changes
         files = parse_diff(diff_text)
@@ -113,7 +110,7 @@ def split_pr(raw_json: dict, cfg: DictConfig) -> dict | None:
         for dir_name, dir_files in dir_groups.items():
             total_loc = sum(count_loc(f["patch"]) for f in dir_files)
 
-            if total_loc > cfg.max_loc or len(dir_groups) >= cfg.max_dirs:
+            if total_loc > 500 or len(dir_groups) >= 3:
                 # Split by individual files
                 for file in dir_files:
                     atomic_diffs.append({"title": f"Update {file['path']}", "patch": file["patch"]})
@@ -124,7 +121,7 @@ def split_pr(raw_json: dict, cfg: DictConfig) -> dict | None:
                 )
 
         # Quality filter
-        if len(atomic_diffs) < cfg.min_diffs:
+        if len(atomic_diffs) < 2:
             return None
 
         return {
