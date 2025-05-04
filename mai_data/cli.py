@@ -1,6 +1,8 @@
 """CLI tool to split PRs into atomic diffs."""
 
 import json
+import logging
+import os
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -12,15 +14,21 @@ from typer import Option
 
 from mai_data.pr_split import split_pr
 
+logger = logging.getLogger(__name__)
 app = typer.Typer(help="Split GitHub PRs into atomic diffs")
 
 
 def read_ndjson(file_path: Path) -> Iterator[dict]:
     """Read NDJSON file line by line."""
     with open(file_path) as f:
+        #     data = json.load(f)
         for line in f:
             if line.strip():
-                yield json.loads(line)
+                try:
+                    yield json.loads(line)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse JSON line: {e}")
+                    continue
 
 
 def write_ndjson(file_path: Path, records: Iterator[dict]) -> None:
@@ -48,12 +56,22 @@ def split_dump(
     ),
 ) -> None:
     """Split PRs in input NDJSON file into atomic diffs."""
+    # Configure logging
+    log_level = os.environ.get("LOG_LEVEL", "INFO")
+    logging.basicConfig(
+        level=log_level,
+        format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    )
+
     # Load configuration
     if config_path:
         cfg = OmegaConf.load(config_path)
     else:
         with hydra.initialize_config_dir(config_dir="config"):
             cfg = hydra.compose(config_name="config")
+
+    logger.info(f"Processing PRs from {input_file}")
+    logger.info(f"Configuration: {OmegaConf.to_yaml(cfg)}")
 
     # Ensure output directory exists
     output_file.parent.mkdir(parents=True, exist_ok=True)
@@ -64,12 +82,16 @@ def split_dump(
 
     # Count total lines for progress bar
     total = sum(1 for _ in open(input_file))
+    logger.info(f"Found {total} PRs to process")
 
     # Process with progress bar
     with tqdm(total=total, desc="Processing PRs") as pbar:
         write_ndjson(output_file, processed)
         pbar.update(total)
 
+    logger.info(f"Finished processing PRs. Output saved to {output_file}")
+
 
 if __name__ == "__main__":
+    logging.basicConfig(level=os.environ.get("LOG_LEVEL", "ERROR"))
     app()

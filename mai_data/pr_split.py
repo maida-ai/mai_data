@@ -1,56 +1,62 @@
 """Split GitHub PRs into atomic diffs based on directory structure and size."""
 
 import hashlib
+import logging
 import time
 from pathlib import Path
 
 import requests
+from omegaconf import DictConfig
 from requests.adapters import HTTPAdapter
 from requests.packages.urllib3.util.retry import Retry
+
+logger = logging.getLogger(__name__)
 
 # Configure requests with retry logic
 session = requests.Session()
 retries = Retry(total=3, backoff_factor=0.5)
 session.mount("https://", HTTPAdapter(max_retries=retries))
 
-# Cache directory for downloaded diffs
-CACHE_DIR = Path(".cache/diffs")
-CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-
-def get_cached_diff(url: str) -> str | None:
+def get_cached_diff(url: str, cache_dir: Path) -> str | None:
     """Get a diff from cache if available."""
     cache_key = hashlib.sha256(url.encode()).hexdigest()
-    cache_path = CACHE_DIR / cache_key
+    cache_path = cache_dir / cache_key
 
     if cache_path.exists():
         return cache_path.read_text()
     return None
 
 
-def cache_diff(url: str, content: str) -> None:
+def cache_diff(url: str, content: str, cache_dir: Path) -> None:
     """Cache a downloaded diff."""
     cache_key = hashlib.sha256(url.encode()).hexdigest()
-    cache_path = CACHE_DIR / cache_key
+    cache_path = cache_dir / cache_key
     cache_path.write_text(content)
 
 
-def fetch_diff(url: str) -> str:
+def fetch_diff(url: str, cfg: DictConfig) -> str:
     """Fetch a diff from GitHub with caching and rate limiting."""
-    # Check cache first
-    cached = get_cached_diff(url)
-    if cached:
-        return cached
+    cache_dir = Path(cfg.cache.dir)
+    cache_dir.mkdir(parents=True, exist_ok=True)
 
-    # Rate limit: 1 second between requests to same host
-    time.sleep(1)
+    # Check cache first if enabled
+    if cfg.cache.enabled:
+        cached = get_cached_diff(url, cache_dir)
+        if cached:
+            return cached
+
+    # Rate limit if enabled
+    if cfg.rate_limit.enabled:
+        time.sleep(cfg.rate_limit.seconds)
 
     response = session.get(url)
     response.raise_for_status()
     content = response.text
 
-    # Cache the result
-    cache_diff(url, content)
+    # Cache the result if enabled
+    if cfg.cache.enabled:
+        cache_diff(url, content, cache_dir)
     return content
 
 
@@ -93,24 +99,40 @@ def group_by_directory(files: list[dict[str, str]]) -> dict[str, list[dict[str, 
     return groups
 
 
-def split_pr(raw_json: dict) -> dict | None:
+def split_pr(raw_json: dict, cfg: DictConfig) -> dict | None:
     """Split a PR into atomic diffs based on directory structure and size."""
     try:
+        if not raw_json:
+            logger.warning("Received empty PR record")
+            return None
+
+        pr_id = raw_json.get("pr_id")
+        diff_url = raw_json.get("diff_url")
+
+        if not diff_url:
+            logger.warning(f"PR {pr_id} has no diff_url. The available keys are {raw_json.keys()}")
+            return None
+
+        logger.info(f"Processing PR {pr_id} from {raw_json.get('repo')}")
+
         # Fetch the diff
-        diff_text = fetch_diff(raw_json["diff_url"])
+        diff_text = fetch_diff(diff_url, cfg)
 
         # Parse into file changes
         files = parse_diff(diff_text)
+        logger.info(f"Found {len(files)} files in PR {pr_id}")
 
         # Group by directory
         dir_groups = group_by_directory(files)
+        logger.info(f"Grouped into {len(dir_groups)} directories")
 
         # Check if we need to split further
         atomic_diffs = []
         for dir_name, dir_files in dir_groups.items():
             total_loc = sum(count_loc(f["patch"]) for f in dir_files)
+            logger.debug(f"Directory {dir_name} has {total_loc} LOC")
 
-            if total_loc > 500 or len(dir_groups) >= 3:
+            if total_loc > cfg.max_loc or len(dir_groups) >= cfg.max_dirs:
                 # Split by individual files
                 for file in dir_files:
                     atomic_diffs.append({"title": f"Update {file['path']}", "patch": file["patch"]})
@@ -121,16 +143,17 @@ def split_pr(raw_json: dict) -> dict | None:
                 )
 
         # Quality filter
-        if len(atomic_diffs) < 2:
+        if len(atomic_diffs) < cfg.min_diffs:
+            logger.info(f"PR {pr_id} has too few diffs ({len(atomic_diffs)} < {cfg.min_diffs})")
             return None
 
         return {
-            "pr_id": raw_json["pr_id"],
-            "repo": raw_json["repo"],
+            "pr_id": pr_id,
+            "repo": raw_json.get("repo"),
             "original_diff": diff_text,
             "atomic_diffs": atomic_diffs,
         }
 
     except Exception as e:
-        print(f"Error processing PR {raw_json.get('pr_id')}: {str(e)}")
+        logger.error(f"Error processing PR {raw_json.get('pr_id')}: {str(e)}", exc_info=True)
         return None
