@@ -33,7 +33,7 @@ def read_ndjson(file_path: Path) -> Iterator[dict]:
 
 def write_ndjson(file_path: Path, records: Iterator[dict]) -> None:
     """Write records to NDJSON file."""
-    with open(file_path, "w") as f:
+    with open(file_path, "a") as f:
         for record in records:
             if record:  # Skip None records
                 f.write(json.dumps(record) + "\n")
@@ -54,10 +54,14 @@ def split_dump(
         None,
         help="Path to custom config file (optional)",
     ),
+    debug: bool = Option(
+        False,
+        help="Enable debug logging",
+    ),
 ) -> None:
     """Split PRs in input NDJSON file into atomic diffs."""
     # Configure logging
-    log_level = os.environ.get("LOG_LEVEL", "INFO")
+    log_level = "DEBUG" if debug else os.environ.get("LOG_LEVEL", "INFO")
     logging.basicConfig(
         level=log_level,
         format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -87,7 +91,7 @@ def split_dump(
     # Process with progress bar
     with tqdm(total=total, desc="Processing PRs") as pbar:
         write_ndjson(output_file, processed)
-        pbar.update(total)
+        pbar.update(1)
 
     logger.info(f"Finished processing PRs. Output saved to {output_file}")
 
